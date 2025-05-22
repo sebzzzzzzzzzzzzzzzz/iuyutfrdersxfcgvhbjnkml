@@ -3,31 +3,43 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
 
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 const cors = require('cors');
+
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
+// Common headers to mimic real browser requests
+const defaultHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Referer': 'https://novlove.com/',
+  'Connection': 'keep-alive',
+};
 
-const LIST_URL = 'https://novlove.com/sort/nov-love-popular';
+const LIST_URL = 'https://novlove.com/sort/nov-love-popular?page=';
 const SEARCH_URL = 'https://novlove.com/search?keyword=';
-// Helper: fetch HTML from a URL
+
+// Helper: fetch HTML from a URL with browser-like headers
 async function fetchHTML(url) {
-  const { data } = await axios.get(url);
+  const { data } = await axios.get(url, {
+    headers: defaultHeaders,
+  });
   return cheerio.load(data);
 }
 
 // Fetch list of novels (title + url)
 async function getNovelList(page = 1, query) {
+  let fullUrl = '';
   if (!query) {
     fullUrl = LIST_URL + page;
   } else {
-    fullUrl = SEARCH_URL + query + "&page=", page;
+    fullUrl = SEARCH_URL + encodeURIComponent(query) + "&page=" + page;
   }
   const novels = [];
 
@@ -44,11 +56,9 @@ async function getNovelList(page = 1, query) {
   return novels;
 }
 
-
-
 async function fetchNovelDetails(novelUrl) {
   try {
-    const { data } = await axios.get(novelUrl);
+    const { data } = await axios.get(novelUrl, { headers: defaultHeaders });
     const $ = cheerio.load(data);
 
     const title = $('h3.title').first().text().trim();
@@ -64,9 +74,9 @@ async function fetchNovelDetails(novelUrl) {
       .get();
 
     let description = $('.desc-text[itemprop="description"]').text()
-        .replace(/\s*\n\s*/g, '\n')
-        .replace(/\n{2,}/g, '\n\n')
-        .trim();
+      .replace(/\s*\n\s*/g, '\n')
+      .replace(/\n{2,}/g, '\n\n')
+      .trim();
 
     if (!description) {
       description = $('#tab-description-title')
@@ -75,9 +85,6 @@ async function fetchNovelDetails(novelUrl) {
         .replace(/\n{2,}/g, '\n\n')
         .trim();
     }
-
-
-
 
     return {
       title,
@@ -96,7 +103,6 @@ async function fetchNovelDetails(novelUrl) {
   }
 }
 
-
 app.get('/api/popular', async (req, res) => {
   try {
     const page = req.query.page || 1;
@@ -110,15 +116,14 @@ app.get('/api/popular', async (req, res) => {
           return {
             title: novel.title,
             url: novel.url,
-            author: details.author,
-            cover: details.cover,
-            status: details.status,
-            genres: details.genres,
-            description: details.description,
+            author: details?.author,
+            cover: details?.cover,
+            status: details?.status,
+            genres: details?.genres,
+            description: details?.description,
           };
         } catch (err) {
           console.error(`Failed to fetch details for ${novel.url}:`, err.message);
-          // Return basic info if details fail
           return { ...novel };
         }
       })
@@ -131,11 +136,9 @@ app.get('/api/popular', async (req, res) => {
   }
 });
 
-
-
 app.get('/api/search', async (req, res) => {
   try {
-    const word = req.query.q
+    const word = req.query.q;
     const page = req.query.page || 1;
     const novels = await getNovelList(page, word);
 
@@ -147,15 +150,14 @@ app.get('/api/search', async (req, res) => {
           return {
             title: novel.title,
             url: novel.url,
-            author: details.author,
-            cover: details.cover,
-            status: details.status,
-            genres: details.genres,
-            description: details.description,
+            author: details?.author,
+            cover: details?.cover,
+            status: details?.status,
+            genres: details?.genres,
+            description: details?.description,
           };
         } catch (err) {
           console.error(`Failed to fetch details for ${novel.url}:`, err.message);
-          // Return basic info if details fail
           return { ...novel };
         }
       })
@@ -168,12 +170,10 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
-
-
 async function getFullChapterList(novelId) {
   const ajaxUrl = `https://novlove.com/ajax/chapter-archive?novelId=${novelId}`;
   try {
-    const { data } = await axios.get(ajaxUrl);
+    const { data } = await axios.get(ajaxUrl, { headers: defaultHeaders });
 
     const $ = cheerio.load(data);
 
@@ -186,7 +186,7 @@ async function getFullChapterList(novelId) {
       const chapterMatch = fullText.match(/^Chapter\s+(\d+)/i);
       const chapter = chapterMatch ? chapterMatch[1] : null;
       const url = $(el).attr('href') || '';
-      chapters.push({ chapter, url});
+      chapters.push({ chapter, url });
     });
 
     return chapters;
@@ -216,10 +216,9 @@ app.get('/api/novel/:slug', async (req, res) => {
   }
 });
 
-
 async function fetchChapterContent(chapterUrl) {
   try {
-    const { data } = await axios.get(chapterUrl);
+    const { data } = await axios.get(chapterUrl, { headers: defaultHeaders });
     const $ = cheerio.load(data);
     $('.unlock-buttons').remove();
 
@@ -255,11 +254,6 @@ async function fetchChapterContent(chapterUrl) {
   }
 }
 
-
-
-
-
-
 app.get('/api/novel/:slug/:chapter', async (req, res) => {
   const { slug, chapter } = req.params;
   const chapterUrl = `https://novlove.com/novel/${slug}/chapter-${chapter}`;
@@ -279,9 +273,8 @@ app.get('/api/novel/:slug/:chapter', async (req, res) => {
       url: chapterUrl,
       content: content.content,
     });
-
   } catch (error) {
-    console.error(`Failed to fetch chapter ${slug}/${chapter}:`, error.message);
+    console.error(error);
     res.status(500).json({ error: 'Failed to fetch chapter content' });
   }
 });
@@ -346,6 +339,7 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
 });
 
 
+
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
