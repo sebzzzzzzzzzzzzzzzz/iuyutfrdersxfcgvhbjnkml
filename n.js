@@ -338,6 +338,21 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
   }
 });
 
+app.get('/', (req, res) => {
+  res.send('Novel API is running.');
+});
+app.get('/api', (req, res) => {
+  res.json({
+    message: 'Welcome to the Novel API',
+    endpoints: {
+      popular: '/api/popular?page=1',
+      search: '/api/search?q=keyword&page=1',
+      novelDetails: '/api/novel/:slug',
+      chapterContent: '/api/novel/:slug/:chapter',
+      img: '/api/img/:slug/:chapterNum',
+    },
+  });
+});
 
 
 app.listen(PORT, () => {
