@@ -2,10 +2,10 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const puppeteer = require('puppeteer');
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const cors = require('cors');
 
 app.use(cors({
   origin: '*',
@@ -13,7 +13,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Common headers to mimic real browser requests
 const defaultHeaders = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
   'Accept-Language': 'en-US,en;q=0.9',
@@ -22,38 +21,23 @@ const defaultHeaders = {
   'Connection': 'keep-alive',
 };
 
-const LIST_URL = 'https://novlove.com/sort/nov-love-popular?page=';
-const SEARCH_URL = 'https://novlove.com/search?keyword=';
+const BASE_URL = 'https://novlove.com';
+const LIST_URL = `${BASE_URL}/sort/nov-love-popular?page=`;
+const SEARCH_URL = `${BASE_URL}/search?keyword=`;
 
-// Helper: fetch HTML from a URL with browser-like headers
+// Utility to fetch HTML and parse with Cheerio
 async function fetchHTML(url) {
-  const { data } = await axios.get(url, {
-    headers: defaultHeaders,
-  });
+  const { data } = await axios.get(url, { headers: defaultHeaders });
   return cheerio.load(data);
 }
 
-// Fetch list of novels (title + url)
 async function getNovelList(page = 1, query) {
-  let fullUrl = '';
-  if (!query) {
-    fullUrl = LIST_URL + page;
-  } else {
-    fullUrl = SEARCH_URL + encodeURIComponent(query) + "&page=" + page;
-  }
-  const novels = [];
-
-  const $ = await fetchHTML(fullUrl);
-
-  $('h3.novel-title a').each((i, el) => {
-    const title = $(el).text().trim();
-    const url = $(el).attr('href');
-    if (title && url) {
-      novels.push({ title, url });
-    }
-  });
-
-  return novels;
+  const url = query ? `${SEARCH_URL}${encodeURIComponent(query)}&page=${page}` : `${LIST_URL}${page}`;
+  const $ = await fetchHTML(url);
+  return $('h3.novel-title a').map((i, el) => ({
+    title: $(el).text().trim(),
+    url: $(el).attr('href'),
+  })).get();
 }
 
 async function fetchNovelDetails(novelUrl) {
@@ -63,158 +47,38 @@ async function fetchNovelDetails(novelUrl) {
 
     const title = $('h3.title').first().text().trim();
     const rating = $('#rateVal').attr('value') || null;
-    const cover = $('img.lazy').first().attr('data-src') || $('img.lazy').first().attr('src') || null;
+    const cover = $('img.lazy').first().attr('data-src') || $('img.lazy').first().attr('src');
     const author = $('.info-meta li:has(h3:contains("Author")) a').text().trim();
-    const genres = $('.info-meta li:has(h3:contains("Genre")) a')
-      .map((i, el) => $(el).text().trim())
-      .get();
+    const genres = $('.info-meta li:has(h3:contains("Genre")) a').map((i, el) => $(el).text().trim()).get();
     const status = $('.info-meta li:has(h3:contains("Status")) a').text().trim();
-    const tags = $('.tag-container a')
-      .map((i, el) => $(el).text().trim())
-      .get();
+    const tags = $('.tag-container a').map((i, el) => $(el).text().trim()).get();
 
-    let description = $('.desc-text[itemprop="description"]').text()
-      .replace(/\s*\n\s*/g, '\n')
-      .replace(/\n{2,}/g, '\n\n')
-      .trim();
+    let description = $('.desc-text[itemprop="description"]').text().trim() ||
+      $('#tab-description-title').text().trim();
 
-    if (!description) {
-      description = $('#tab-description-title')
-        .text()
-        .replace(/\s*\n\s*/g, '\n')
-        .replace(/\n{2,}/g, '\n\n')
-        .trim();
-    }
-
-    return {
-      title,
-      rating,
-      author,
-      cover,
-      genres,
-      status,
-      tags,
-      description,
-      url: novelUrl
-    };
+    return { title, rating, author, cover, genres, status, tags, description, url: novelUrl };
   } catch (error) {
-    console.error(`Failed to fetch novel details: ${error.message}`);
+    console.error(`Error fetching novel details: ${error.message}`);
     return null;
   }
 }
 
-app.get('/api/popular', async (req, res) => {
-  try {
-    const page = req.query.page || 1;
-    const novels = await getNovelList(page);
-
-    // For each novel, get details by visiting its URL
-    const novelsWithDetails = await Promise.all(
-      novels.map(async (novel) => {
-        try {
-          const details = await fetchNovelDetails(novel.url);
-          return {
-            title: novel.title,
-            url: novel.url,
-            author: details?.author,
-            cover: details?.cover,
-            status: details?.status,
-            genres: details?.genres,
-            description: details?.description,
-          };
-        } catch (err) {
-          console.error(`Failed to fetch details for ${novel.url}:`, err.message);
-          return { ...novel };
-        }
-      })
-    );
-
-    res.json({ page: Number(page), novels: novelsWithDetails });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to fetch popular novels' });
-  }
-});
-
-app.get('/api/search', async (req, res) => {
-  try {
-    const word = req.query.q;
-    const page = req.query.page || 1;
-    const novels = await getNovelList(page, word);
-
-    // For each novel, get details by visiting its URL
-    const novelsWithDetails = await Promise.all(
-      novels.map(async (novel) => {
-        try {
-          const details = await fetchNovelDetails(novel.url);
-          return {
-            title: novel.title,
-            url: novel.url,
-            author: details?.author,
-            cover: details?.cover,
-            status: details?.status,
-            genres: details?.genres,
-            description: details?.description,
-          };
-        } catch (err) {
-          console.error(`Failed to fetch details for ${novel.url}:`, err.message);
-          return { ...novel };
-        }
-      })
-    );
-
-    res.json({ page: Number(page), novels: novelsWithDetails });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: `Failed to search ${word} novels` });
-  }
-});
-
-async function getFullChapterList(novelId) {
-  const ajaxUrl = `https://novlove.com/ajax/chapter-archive?novelId=${novelId}`;
+async function getFullChapterList(slug) {
+  const ajaxUrl = `${BASE_URL}/ajax/chapter-archive?novelId=${slug}`;
   try {
     const { data } = await axios.get(ajaxUrl, { headers: defaultHeaders });
-
     const $ = cheerio.load(data);
 
-    const chapters = [];
-
-    $('ul.list-chapter li a').each((i, el) => {
-      const fullText = $(el).text().trim();
-
-      // Extract chapter number (e.g., "Chapter 12", "Chapter 12:")
-      const chapterMatch = fullText.match(/^Chapter\s+(\d+)/i);
-      const chapter = chapterMatch ? chapterMatch[1] : null;
-      const url = $(el).attr('href') || '';
-      chapters.push({ chapter, url });
-    });
-
-    return chapters;
+    return $('ul.list-chapter li a').map((i, el) => {
+      const text = $(el).text().trim();
+      const match = text.match(/^Chapter\s+(\d+)/i);
+      return { chapter: match?.[1] || null, url: $(el).attr('href') };
+    }).get();
   } catch (err) {
-    console.error('Error fetching chapters:', err.message || err);
+    console.error('Error fetching chapters:', err.message);
     return [];
   }
 }
-
-// Example: /api/novel/super-gene
-app.get('/api/novel/:slug', async (req, res) => {
-  const slug = req.params.slug;
-  const novelUrl = `https://novlove.com/novel/${slug}`;
-
-  try {
-    const details = await fetchNovelDetails(novelUrl);
-    const chapters = await getFullChapterList(slug);
-
-    if (!details) {
-      return res.status(404).json({ error: 'Novel not found or failed to fetch details' });
-    }
-
-    res.json({ ...details, chapters });
-  } catch (error) {
-    console.error(`Failed to fetch novel at ${novelUrl}:`, error.message);
-    res.status(500).json({ error: 'Internal server error while fetching novel details' });
-  }
-});
 
 async function fetchChapterContent(chapterUrl) {
   try {
@@ -222,57 +86,90 @@ async function fetchChapterContent(chapterUrl) {
     const $ = cheerio.load(data);
     $('.unlock-buttons').remove();
 
-    const paragraphs = [];
-
-    const title = $('.novel-title').text().trim(); // Extract title text
-
-    $('p').each((i, el) => {
-      let html = $.html(el).trim();
-      html = html.replace(/(\n)?<\/p>/g, '</p>');
+    const title = $('.novel-title').text().trim();
+    const paragraphs = $('p').map((i, el) => {
       const text = $(el).text().trim();
+      if (!text || text.includes('Total Responses') || text.startsWith('Source:')) return null;
+      return $.html(el).trim();
+    }).get().filter(Boolean);
 
-      // Skip unwanted paragraphs
-      if (
-        text.startsWith('Source:') ||
-        text.includes('Total Responses') ||
-        text === '' ||
-        text === '\u00A0' // non-breaking space
-      ) {
-        return;
-      }
-
-      paragraphs.push(html);
-    });
-
-    return {
-      title,
-      content: paragraphs.join(''), // remove \n and just concatenate
-    };
+    return { title, content: paragraphs.join('') };
   } catch (error) {
-    console.error(`Failed to fetch chapter content from ${chapterUrl}:`, error.message);
+    console.error(`Error fetching chapter: ${error.message}`);
     return null;
   }
 }
 
+app.get('/api/popular', async (req, res) => {
+  const page = req.query.page || 1;
+  try {
+    const novels = await getNovelList(page);
+    const enriched = await Promise.all(novels.map(async (novel) => {
+      const details = await fetchNovelDetails(novel.url);
+      return details ? {
+        ...novel,
+        author: details.author,
+        cover: details.cover,
+        status: details.status,
+        genres: details.genres,
+        description: details.description,
+      } : novel;
+    }));
+    res.json({ page: Number(page), novels: enriched });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to fetch popular novels' });
+  }
+});
+
+app.get('/api/search', async (req, res) => {
+  const word = req.query.q;
+  const page = req.query.page || 1;
+  if (!word) return res.status(400).json({ error: 'Missing search query' });
+
+  try {
+    const novels = await getNovelList(page, word);
+    const enriched = await Promise.all(novels.map(async (novel) => {
+      const details = await fetchNovelDetails(novel.url);
+      return details ? {
+        ...novel,
+        author: details.author,
+        cover: details.cover,
+        status: details.status,
+        genres: details.genres,
+        description: details.description,
+      } : novel;
+    }));
+    res.json({ page: Number(page), novels: enriched });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+app.get('/api/novel/:slug', async (req, res) => {
+  const { slug } = req.params;
+  const novelUrl = `${BASE_URL}/novel/${slug}`;
+  try {
+    const details = await fetchNovelDetails(novelUrl);
+    if (!details) return res.status(404).json({ error: 'Novel not found' });
+    const chapters = await getFullChapterList(slug);
+    res.json({ ...details, chapters });
+  } catch (error) {
+    console.error(`Error fetching novel ${slug}:`, error.message);
+    res.status(500).json({ error: 'Failed to fetch novel' });
+  }
+});
+
 app.get('/api/novel/:slug/:chapter', async (req, res) => {
   const { slug, chapter } = req.params;
-  const chapterUrl = `https://novlove.com/novel/${slug}/chapter-${chapter}`;
-  const protocol = req.protocol;
-  const host = req.get('host');
+  const chapterUrl = `${BASE_URL}/novel/${slug}/chapter-${chapter}`;
   try {
     const content = await fetchChapterContent(chapterUrl);
-    if (!content) {
-      return res.status(404).json({ error: 'Chapter content not found' });
-    }
+    if (!content) return res.status(404).json({ error: 'Chapter not found' });
 
-    res.json({
-      title: content.title,
-      slug: slug,
-      img: `${protocol}://${host}/api/img/${slug}/${chapter}`,
-      chapter: `${chapter}`,
-      url: chapterUrl,
-      content: content.content,
-    });
+    const imgUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
+    res.json({ title: content.title, slug, chapter, url: chapterUrl, content: content.content, img: imgUrl });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch chapter content' });
@@ -281,59 +178,42 @@ app.get('/api/novel/:slug/:chapter', async (req, res) => {
 
 app.get('/api/img/:slug/:chapterNum', async (req, res) => {
   const { slug, chapterNum } = req.params;
-
-
-  const protocol = req.protocol;
-  const host = req.get('host');
-
-  const apiUrl = `${protocol}://${host}/api/novel/${slug}/${chapterNum}`;
-
+  const chapterApiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapterNum}`;
 
   try {
-    const apiResponse = await fetch(apiUrl);
-    if (!apiResponse.ok) {
-      return res.status(apiResponse.status).send('Error fetching novel data');
-    }
+    const apiResponse = await fetch(chapterApiUrl);
+    if (!apiResponse.ok) return res.status(apiResponse.status).send('Error fetching chapter data');
+    const data = await apiResponse.json();
 
-    const novelData = await apiResponse.json();
-    const htmlContent = novelData.content;
+    if (!data?.content) return res.status(400).send('No content available');
 
-    if (!htmlContent || htmlContent.trim() === '') {
-      return res.status(400).send('No content available');
-    }
-
-    const width = 390;
-    const padding = 30;
-
-    const browser = await puppeteer.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
+    const browser = await puppeteer.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] });
     const page = await browser.newPage();
-
-    await page.setViewport({ width, height: 1000, deviceScaleFactor: 3 });
+    await page.setViewport({ width: 390, height: 1000, deviceScaleFactor: 3 });
 
     await page.setContent(`
       <html>
-        <head><style>body { font-size: 18px; padding: 20px; }</style></head>
-        <body>${htmlContent}</body>
+        <head><style>
+          body { font-size: 18px; padding: 20px; line-height: 1.6; font-family: sans-serif; }
+        </style></head>
+        <body>${data.content}</body>
       </html>
     `, { waitUntil: 'networkidle0' });
 
     const bodyHandle = await page.$('body');
-    const boundingBox = await bodyHandle.boundingBox();
+    const box = await bodyHandle.boundingBox();
     await bodyHandle.dispose();
 
-    const fullHeight = Math.ceil(boundingBox.height) + padding;
+    const height = Math.ceil(box.height) + 30;
+    await page.setViewport({ width: 390, height, deviceScaleFactor: 3 });
 
-    await page.setViewport({ width, height: fullHeight, deviceScaleFactor: 3 });
-
-    const screenshotBuffer = await page.screenshot({ fullPage: true });
+    const buffer = await page.screenshot({ fullPage: true });
     await browser.close();
 
     res.set('Content-Type', 'image/png');
-    res.send(screenshotBuffer);
+    res.send(buffer);
   } catch (err) {
-    console.error(`Error generating image: ${err.message}`);
+    console.error(`Image generation failed: ${err.message}`);
     res.status(500).send('Internal server error');
   }
 });
@@ -341,6 +221,7 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
 app.get('/', (req, res) => {
   res.send('Novel API is running.');
 });
+
 app.get('/api', (req, res) => {
   res.json({
     message: 'Welcome to the Novel API',
@@ -354,7 +235,6 @@ app.get('/api', (req, res) => {
   });
 });
 
-
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`✅ Server running at http://localhost:${PORT}`);
 });
