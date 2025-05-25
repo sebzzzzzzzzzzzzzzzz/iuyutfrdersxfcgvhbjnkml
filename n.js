@@ -1,74 +1,111 @@
 const express = require('express');
-const { createCanvas } = require('canvas');
+const { createCanvas, registerFont } = require('canvas');
+const path = require('path');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-app.use(express.json({ limit: '10mb' })); // Accept large body payloads
+// Register Georgia font from local file (adjust path if needed)
+registerFont(path.join(__dirname, 'georgia.ttf'), { family: 'Georgia' });
 
-app.post('/api/html-to-image', async (req, res) => {
+function stripHtmlTagsExceptP(html) {
+  const regex = /<p>(.*?)<\/p>/gis;
+  const paragraphs = [];
+  let match;
+  while ((match = regex.exec(html)) !== null) {
+    const cleanText = match[1].replace(/<\/?[^>]+(>|$)/g, '').replace(/\s+/g, ' ').trim();
+    if (cleanText.length > 0) paragraphs.push(cleanText);
+  }
+  return paragraphs;
+}
+
+app.get('/api/html-to-image', async (req, res) => {
   try {
-    const { html } = req.body;
-    if (!html) return res.status(400).json({ error: 'Missing html in body' });
+    const html = req.query.html;
+    if (!html) return res.status(400).send('Missing html query parameter');
 
-    // Wrap content in full HTML layout
-    const fullHtml = `
-      <html>
-        <head><style>body { font-size: 18px; padding: 20px; }</style></head>
-        <body>${html}</body>
-      </html>
-    `;
+    const paragraphs = stripHtmlTagsExceptP(html);
 
-    // Strip HTML tags for rendering plain text
-    const plainText = fullHtml.replace(/<\/?[^>]+(>|$)/g, '').replace(/\s+/g, ' ').trim();
+    const dpr = 3;              // Device Pixel Ratio for crisp rendering
+    const width = 390;
+    const padding = 30;
+    const maxHeight = 10000;
+    const maxWidth = width - padding * 2;
+    const fontSize = 20;
+    const lineHeight = fontSize * 1.6;
 
-    // Canvas config
-    const width = 390 * 3;
-    const maxHeight = 3000 * 3;
-    const canvas = createCanvas(width, maxHeight);
+    // Create large canvas scaled by DPR
+    const canvas = createCanvas(width * dpr, maxHeight * dpr);
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#fff';
+    // Scale drawing ops for DPR
+    ctx.scale(dpr, dpr);
+
+    // White background
+    ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, maxHeight);
-    ctx.fillStyle = '#000';
-    ctx.font = 'bold 54px sans-serif'; // ~18px at 3x scale
+
+    // Font style
+    ctx.fillStyle = '#000000';
+    ctx.font = `${fontSize}px Georgia`;
     ctx.textBaseline = 'top';
 
-    const lineHeight = 60;
-    const maxWidth = width - 40;
-    const words = plainText.split(' ');
-    let line = '';
-    let y = 20;
+    let y = padding;
 
-    for (let n = 0; n < words.length; n++) {
-      const testLine = line + words[n] + ' ';
-      const metrics = ctx.measureText(testLine);
-      if (metrics.width > maxWidth && n > 0) {
-        ctx.fillText(line, 20, y);
-        line = words[n] + ' ';
-        y += lineHeight;
-        if (y > maxHeight - lineHeight) break;
-      } else {
-        line = testLine;
+    function drawWrappedText(text, x, y) {
+      const words = text.split(' ');
+      let line = '';
+      let startY = y;
+
+      for (let n = 0; n < words.length; n++) {
+        const testLine = line + (line ? ' ' : '') + words[n];
+        const metrics = ctx.measureText(testLine);
+
+        if (metrics.width > maxWidth && line) {
+          ctx.fillText(line, x, startY);
+          startY += lineHeight;
+          line = words[n];
+        } else {
+          line = testLine;
+        }
       }
+      if (line) {
+        ctx.fillText(line, x, startY);
+        startY += lineHeight;
+      }
+      return startY;
     }
-    ctx.fillText(line, 20, y);
 
-    const actualHeight = y + lineHeight + 20;
-    const croppedCanvas = createCanvas(width, actualHeight);
+    for (const para of paragraphs) {
+      y = drawWrappedText(para, padding, y);
+      y += lineHeight * 0.3;
+      if (y > maxHeight - lineHeight) break;
+    }
+
+    const actualHeight = y + padding;
+
+    // Create cropped canvas at DPR scale
+    const croppedCanvas = createCanvas(width * dpr, actualHeight * dpr);
     const croppedCtx = croppedCanvas.getContext('2d');
-    const imgData = ctx.getImageData(0, 0, width, actualHeight);
+
+    // Scale for DPR
+    croppedCtx.scale(dpr, dpr);
+
+    // Copy from original canvas to cropped canvas
+    // getImageData / putImageData works at pixel level so no scaling here:
+    const imgData = ctx.getImageData(0, 0, width * dpr, actualHeight * dpr);
     croppedCtx.putImageData(imgData, 0, 0);
 
     const buffer = croppedCanvas.toBuffer('image/png');
     res.set('Content-Type', 'image/png');
     res.send(buffer);
+
   } catch (err) {
     console.error('Image generation failed:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).send('Internal server error');
   }
 });
 
-app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+app.listen(PORT, () => {
+  console.log(`✅ Server running at http://localhost:${PORT}`);
 });
