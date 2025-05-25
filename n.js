@@ -1,33 +1,25 @@
 const express = require('express');
 const { createCanvas } = require('canvas');
-
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 
-// Parse JSON bodies with no size limit (default is '100kb', here removed)
-app.use(express.json()); // no limit option means unlimited by default
-
-app.post('/api/html-to-image', async (req, res) => {
+app.get('/api/html-to-image', async (req, res) => {
   try {
-    const { html } = req.body;
+    const html = req.query.html;
+    if (!html) return res.status(400).send('Missing html query parameter');
 
-    if (!html) {
-      return res.status(400).json({ error: 'Missing html in body' });
-    }
-
-    // Strip HTML tags to plain text
+    // Strip HTML tags for plain text
     const plainText = html.replace(/<\/?[^>]+(>|$)/g, '').replace(/\s+/g, ' ').trim();
 
     const width = 390 * 3;
-    const maxHeight = 2000 * 3;
+    const maxHeight = 5000 * 3;
     const canvas = createCanvas(width, maxHeight);
     const ctx = canvas.getContext('2d');
 
-    // White background
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, width, maxHeight);
 
-    // Text styles
     ctx.fillStyle = '#000';
     ctx.font = 'bold 54px sans-serif';
     ctx.textBaseline = 'top';
@@ -52,7 +44,6 @@ app.post('/api/html-to-image', async (req, res) => {
     }
     ctx.fillText(line, 20, y);
 
-    // Crop canvas to content height
     const actualHeight = y + lineHeight + 20;
     const croppedCanvas = createCanvas(width, actualHeight);
     const croppedCtx = croppedCanvas.getContext('2d');
@@ -65,12 +56,8 @@ app.post('/api/html-to-image', async (req, res) => {
 
   } catch (err) {
     console.error('Image generation failed:', err);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).send('Internal server error');
   }
-});
-
-app.get('/', (req, res) => {
-  res.send('HTML to Image API is running.');
 });
 
 app.listen(PORT, () => {
