@@ -1,71 +1,78 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+const { createCanvas } = require('canvas');
 
 const app = express();
-const cors = require('cors');
+const PORT = process.env.PORT || 3000;
 
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+// Parse JSON bodies with no size limit (default is '100kb', here removed)
+app.use(express.json()); // no limit option means unlimited by default
 
-
-app.get('/:htmlContent', async (req, res) => {
-  const { htmlContent} = req.params;
-
+app.post('/api/html-to-image', async (req, res) => {
   try {
+    const { html } = req.body;
 
-    const width = 390; // iPhone screen width
-    const padding = 30; // extra space at bottom
+    if (!html) {
+      return res.status(400).json({ error: 'Missing html in body' });
+    }
 
-    // Launch Puppeteer
-    const browser = await puppeteer.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-    const page = await browser.newPage();
+    // Strip HTML tags to plain text
+    const plainText = html.replace(/<\/?[^>]+(>|$)/g, '').replace(/\s+/g, ' ').trim();
 
-    await page.setViewport({
-      width,
-      height: 1000, // initial height
-      deviceScaleFactor: 3,
-    });
+    const width = 390 * 3;
+    const maxHeight = 2000 * 3;
+    const canvas = createCanvas(width, maxHeight);
+    const ctx = canvas.getContext('2d');
 
-    // Set the HTML content
-    await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+    // White background
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, width, maxHeight);
 
-    // Get the full height of the rendered content
-    const bodyHandle = await page.$('body');
-    const boundingBox = await bodyHandle.boundingBox();
-    await bodyHandle.dispose();
+    // Text styles
+    ctx.fillStyle = '#000';
+    ctx.font = 'bold 54px sans-serif';
+    ctx.textBaseline = 'top';
 
-    const fullHeight = Math.ceil(boundingBox.height) + padding;
+    const lineHeight = 60;
+    const maxWidth = width - 40;
+    const words = plainText.split(' ');
+    let line = '';
+    let y = 20;
 
-    // Resize viewport to full content height
-    await page.setViewport({
-      width,
-      height: fullHeight,
-      deviceScaleFactor: 3,
-    });
+    for (let n = 0; n < words.length; n++) {
+      const testLine = line + words[n] + ' ';
+      const metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && n > 0) {
+        ctx.fillText(line, 20, y);
+        line = words[n] + ' ';
+        y += lineHeight;
+        if (y > maxHeight - lineHeight) break;
+      } else {
+        line = testLine;
+      }
+    }
+    ctx.fillText(line, 20, y);
 
-    // Take a screenshot of the full content
-    const screenshotBuffer = await page.screenshot({
-      clip: { x: 0, y: 0, width, height: fullHeight },
-      type: 'png',
-    });
+    // Crop canvas to content height
+    const actualHeight = y + lineHeight + 20;
+    const croppedCanvas = createCanvas(width, actualHeight);
+    const croppedCtx = croppedCanvas.getContext('2d');
+    const imgData = ctx.getImageData(0, 0, width, actualHeight);
+    croppedCtx.putImageData(imgData, 0, 0);
 
-    await browser.close();
-
-    // Set response headers and send image
+    const buffer = croppedCanvas.toBuffer('image/png');
     res.set('Content-Type', 'image/png');
-    res.send(screenshotBuffer);
-  } catch (error) {
-    console.error(error);
-    res.status(500).send('Error generating image');
+    res.send(buffer);
+
+  } catch (err) {
+    console.error('Image generation failed:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-const PORT = process.env.PORT || 3000;
+app.get('/', (req, res) => {
+  res.send('HTML to Image API is running.');
+});
+
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`✅ Server running at http://localhost:${PORT}`);
 });
