@@ -399,8 +399,7 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
 
     // Build page URLs
     const baseUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
-    const pageUrls = pages.map((_, i) => ({ url: `${baseUrl}?page=${i + 1}` }));
-
+    const pageUrls = pages.map((_, i) => `${baseUrl}?page=${i + 1}`);
     res.json({ totalPages: pages.length, pages: pageUrls });
   } catch (err) {
     console.error(err);
