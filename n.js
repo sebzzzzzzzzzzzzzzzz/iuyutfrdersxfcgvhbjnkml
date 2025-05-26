@@ -331,38 +331,42 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
   const { slug, chapter } = req.params;
 
   try {
-    // Fetch chapter content to count paragraphs and lines
+    // Fetch chapter content
     const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapter}`;
     const { data } = await axios.get(apiUrl);
     if (!data.content) {
       return res.status(404).json({ error: 'Chapter content not found' });
     }
 
-    // Extract paragraphs as plain text
+    // Strip HTML to paragraphs (plain text)
     const paragraphs = stripHtmlTagsExceptP(data.content);
 
-    // Setup canvas for text measurement
+    // Setup canvas for text measurement (same as image endpoint)
     const dpr = 2;
     const width = 390;
-    const padding = 30;
     const fontSize = 20;
     const lineHeight = fontSize * 1.6;
+    const padding = 30;
     const maxWidth = width - padding * 2;
-    const linesPerPage = 100;
+    const maxHeight = 1800;
 
-    const canvas = createCanvas(width * dpr, 1000 * dpr);
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-    ctx.font = `${fontSize}px Georgia`;
+    const tempCanvas = createCanvas(width * dpr, 100);
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.scale(dpr, dpr);
+    tempCtx.font = `${fontSize}px Georgia`;
 
-    function wrapParagraph(para) {
+    const wrappedParagraphs = [];
+
+    // Wrap each paragraph
+    for (const para of paragraphs) {
       const words = para.split(' ');
-      const lines = [];
+      let lines = [];
       let line = '';
+
       for (const word of words) {
-        const testLine = line ? line + ' ' + word : word;
-        const metrics = ctx.measureText(testLine);
-        if (metrics.width > maxWidth && line) {
+        const testLine = line + (line ? ' ' : '') + word;
+        const { width: lineWidth } = tempCtx.measureText(testLine);
+        if (lineWidth > maxWidth && line) {
           lines.push(line);
           line = word;
         } else {
@@ -370,33 +374,40 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
         }
       }
       if (line) lines.push(line);
-      return lines;
+      lines.push(''); // Add blank line after paragraph
+      wrappedParagraphs.push(lines);
     }
 
-    // Wrap all paragraphs into lines
-    const wrappedParagraphs = paragraphs.map(p => wrapParagraph(p));
+    // Group paragraphs into pages by total height
+    const pages = [];
+    let currentPage = [];
+    let currentHeight = 0;
 
-    // Calculate total lines, splitting only at paragraph boundaries
-    let totalLines = 0;
-    for (const paraLines of wrappedParagraphs) {
-      totalLines += paraLines.length + 1; // +1 for blank line after paragraph
+    for (const lines of wrappedParagraphs) {
+      const paraHeight = lines.length * lineHeight;
+      if (currentHeight + paraHeight > maxHeight && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentHeight = 0;
+      }
+      currentPage.push(...lines);
+      currentHeight += paraHeight;
+    }
+    if (currentPage.length > 0) {
+      pages.push(currentPage);
     }
 
-    const totalPages = Math.ceil(totalLines / linesPerPage);
+    // Build page URLs
+    const baseUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
+    const pageUrls = pages.map((_, i) => ({ url: `${baseUrl}?page=${i + 1}` }));
 
-    // Construct all page URLs
-    const baseUrl = `htps://${req.get('host')}/api/img/${slug}/${chapter}`;
-    const pageUrls = [];
-    for (let i = 1; i <= totalPages; i++) {
-      pageUrls.push(`${baseUrl}?page=${i}`);
-    }
-
-    res.json({ totalPages, pages: pageUrls });
+    res.json({ totalPages: pages.length, pages: pageUrls });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to generate page list' });
   }
 });
+
 
 
 app.get('/', (req, res) => {
