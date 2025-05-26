@@ -75,6 +75,27 @@ async function fetchNovelDetails(novelUrl) {
   }
 }
 
+const imageCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function setCache(key, value) {
+  imageCache.set(key, {
+    value,
+    expiry: Date.now() + CACHE_TTL,
+  });
+}
+
+function getCache(key) {
+  const cached = imageCache.get(key);
+  if (!cached) return null;
+  if (Date.now() > cached.expiry) {
+    imageCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+
 app.get('/api/popular', async (req, res) => {
   const page = req.query.page || 1;
   try {
@@ -200,73 +221,82 @@ function stripHtmlTagsExceptP(html) {
 
 app.get('/api/img/:slug/:chapterNum', async (req, res) => {
   const { slug, chapterNum } = req.params;
+  const page = parseInt(req.query.page || '1', 10);
   const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapterNum}`;
+  const cacheKey = `${slug}-${chapterNum}-page${page}`;
+
+  const cached = getCache(cacheKey);
+  if (cached) {
+    res.set('Content-Type', 'image/jpeg');
+    res.set('X-Cache', 'HIT');
+    return res.send(cached);
+  }
 
   try {
     const { data } = await axios.get(apiUrl);
     const paragraphs = stripHtmlTagsExceptP(data.content);
 
-    const dpr = 3;
+    const dpr = 2;
     const width = 390;
     const padding = 30;
-    const maxHeight = 10000;
-    const maxWidth = width - padding * 2;
     const fontSize = 20;
     const lineHeight = fontSize * 1.6;
+    const maxWidth = width - padding * 2;
+    const linesPerPage = 100;
 
-    const canvas = createCanvas(width * dpr, maxHeight * dpr);
+    const height = 1800;
+    const canvas = createCanvas(width * dpr, height * dpr);
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, width, maxHeight);
+    ctx.fillRect(0, 0, width, height);
     ctx.fillStyle = '#000000';
     ctx.font = `${fontSize}px Georgia`;
     ctx.textBaseline = 'top';
 
-    let y = padding;
-    function drawWrappedText(text, x, y) {
-      const words = text.split(' ');
+    let allLines = [];
+    for (const para of paragraphs) {
+      const words = para.split(' ');
       let line = '';
-      let startY = y;
       for (let word of words) {
         const testLine = line + (line ? ' ' : '') + word;
         const metrics = ctx.measureText(testLine);
         if (metrics.width > maxWidth && line) {
-          ctx.fillText(line, x, startY);
-          startY += lineHeight;
+          allLines.push(line);
           line = word;
         } else {
           line = testLine;
         }
       }
-      if (line) {
-        ctx.fillText(line, x, startY);
-        startY += lineHeight;
-      }
-      return startY;
+      if (line) allLines.push(line);
+      allLines.push('');
     }
 
-    for (const para of paragraphs) {
-      y = drawWrappedText(para, padding, y);
-      y += lineHeight * 0.3;
-      if (y > maxHeight - lineHeight) break;
+    const maxPages = Math.ceil(allLines.length / linesPerPage);
+    if (page > maxPages) {
+      return res.status(404).json({ error: 'Page out of range' });
     }
 
-    const actualHeight = y + padding;
-    const croppedCanvas = createCanvas(width * dpr, actualHeight * dpr);
-    const croppedCtx = croppedCanvas.getContext('2d');
-    croppedCtx.scale(dpr, dpr);
-    const imgData = ctx.getImageData(0, 0, width * dpr, actualHeight * dpr);
-    croppedCtx.putImageData(imgData, 0, 0);
+    const pageLines = allLines.slice((page - 1) * linesPerPage, page * linesPerPage);
+    let y = padding;
+    for (let line of pageLines) {
+      ctx.fillText(line, padding, y);
+      y += lineHeight;
+    }
 
-    const buffer = croppedCanvas.toBuffer('image/png');
-    res.set('Content-Type', 'image/png');
-    res.send(buffer);
+    const jpegBuffer = canvas.toBuffer('image/jpeg', { quality: 0.85 });
+    setCache(cacheKey, jpegBuffer);
+
+    res.set('Content-Type', 'image/jpeg');
+    res.set('X-Max-Pages', maxPages);
+    res.set('X-Cache', 'MISS');
+    res.send(jpegBuffer);
   } catch (err) {
     console.error('Image generation failed:', err.message);
     res.status(500).send('Internal server error');
   }
 });
+
 
 app.get('/', (req, res) => {
   res.send('📖 Novel API is running.');
