@@ -8,17 +8,14 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3005;
 
-// Register font
 registerFont(path.join(__dirname, 'georgia.ttf'), { family: 'Georgia' });
 
-// CORS
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Headers
 const defaultHeaders = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
   'Accept-Language': 'en-US,en;q=0.9',
@@ -27,7 +24,6 @@ const defaultHeaders = {
   'Connection': 'keep-alive',
 };
 
-// Helper URLs
 const LIST_URL = 'https://novlove.com/sort/nov-love-popular?page=';
 const SEARCH_URL = 'https://novlove.com/search?keyword=';
 
@@ -76,25 +72,20 @@ async function fetchNovelDetails(novelUrl) {
 }
 
 const imageCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000;
 
 function setCache(key, value) {
-  imageCache.set(key, {
-    value,
-    expiry: Date.now() + CACHE_TTL,
-  });
+  imageCache.set(key, { value, expiry: Date.now() + CACHE_TTL });
 }
 
 function getCache(key) {
   const cached = imageCache.get(key);
-  if (!cached) return null;
-  if (Date.now() > cached.expiry) {
+  if (!cached || Date.now() > cached.expiry) {
     imageCache.delete(key);
     return null;
   }
   return cached.value;
 }
-
 
 app.get('/api/popular', async (req, res) => {
   const page = req.query.page || 1;
@@ -189,8 +180,6 @@ async function fetchChapterContent(chapterUrl) {
 app.get('/api/novel/:slug/:chapter', async (req, res) => {
   const { slug, chapter } = req.params;
   const chapterUrl = `https://novlove.com/novel/${slug}/chapter-${chapter}`;
-  const protocol = req.protocol;
-  const host = req.get('host');
   try {
     const content = await fetchChapterContent(chapterUrl);
     if (!content) return res.status(404).json({ error: 'Chapter content not found' });
@@ -198,7 +187,7 @@ app.get('/api/novel/:slug/:chapter', async (req, res) => {
     res.json({
       title: content.title,
       slug: slug,
-      img: `${protocol}://${host}/api/img/${slug}/${chapter}`,
+      img: `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapter}/pages`,
       chapter: chapter,
       url: chapterUrl,
       content: content.content,
@@ -233,7 +222,7 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
   }
 
   try {
-    const { data } = await axios.get(apiUrl);
+    const { data } = await axios.get(apiUrl, { headers: defaultHeaders });
     const paragraphs = stripHtmlTagsExceptP(data.content);
 
     const dpr = 2;
@@ -267,11 +256,10 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
         }
       }
       if (line) lines.push(line);
-      lines.push(''); // blank line after paragraph
+      lines.push('');
       wrappedParagraphs.push(lines);
     }
 
-    // Pagination of paragraphs into pages by height
     const pages = [];
     let currentPage = [];
     let currentHeight = 0;
@@ -286,9 +274,7 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
       currentPage.push(...lines);
       currentHeight += paraHeight;
     }
-    if (currentPage.length > 0) {
-      pages.push(currentPage);
-    }
+    if (currentPage.length > 0) pages.push(currentPage);
 
     if (page < 1 || page > pages.length) {
       return res.status(404).json({ error: `Page ${page} out of range` });
@@ -306,7 +292,7 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
     ctx.font = `${fontSize}px Georgia`;
     ctx.textBaseline = 'top';
 
-    const extraTopPadding = 40; // Adjust top padding here for first page
+    const extraTopPadding = 40;
     let y = page === 1 ? extraTopPadding : 0;
 
     for (const line of pageLines) {
@@ -328,22 +314,16 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
   }
 });
 
-
 app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
   const { slug, chapter } = req.params;
 
   try {
-    // Fetch chapter content
     const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapter}`;
-    const { data } = await axios.get(apiUrl);
-    if (!data.content) {
-      return res.status(404).json({ error: 'Chapter content not found' });
-    }
+    const { data } = await axios.get(apiUrl, { headers: defaultHeaders });
+    if (!data.content) return res.status(404).json({ error: 'Chapter content not found' });
 
-    // Strip HTML to paragraphs (plain text)
     const paragraphs = stripHtmlTagsExceptP(data.content);
 
-    // Setup canvas for text measurement (same as image endpoint)
     const dpr = 2;
     const width = 390;
     const fontSize = 20;
@@ -359,7 +339,6 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
 
     const wrappedParagraphs = [];
 
-    // Wrap each paragraph
     for (const para of paragraphs) {
       const words = para.split(' ');
       let lines = [];
@@ -376,11 +355,10 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
         }
       }
       if (line) lines.push(line);
-      lines.push(''); // Add blank line after paragraph
+      lines.push('');
       wrappedParagraphs.push(lines);
     }
 
-    // Group paragraphs into pages by total height
     const pages = [];
     let currentPage = [];
     let currentHeight = 0;
@@ -395,11 +373,8 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
       currentPage.push(...lines);
       currentHeight += paraHeight;
     }
-    if (currentPage.length > 0) {
-      pages.push(currentPage);
-    }
+    if (currentPage.length > 0) pages.push(currentPage);
 
-    // Build page URLs
     const baseUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
     const pageUrls = pages.map((_, i) => `${baseUrl}?page=${i + 1}`);
     res.json({ totalPages: pages.length, pages: pageUrls });
@@ -408,8 +383,6 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
     res.status(500).json({ error: 'Failed to generate page list' });
   }
 });
-
-
 
 app.get('/', (req, res) => {
   res.send('📖 Novel API is running.');
