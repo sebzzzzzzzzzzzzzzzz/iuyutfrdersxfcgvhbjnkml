@@ -1,12 +1,9 @@
 const express = require('express');
+const axios = require('axios');
 const cheerio = require('cheerio');
 const cors = require('cors');
 const { createCanvas, registerFont } = require('canvas');
 const path = require('path');
-
-const axios = require('axios');
-const tough = require('tough-cookie');
-const { wrapper } = require('axios-cookiejar-support');
 
 const app = express();
 const PORT = process.env.PORT || 3005;
@@ -21,26 +18,21 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Setup axios client with cookie jar
-const cookieJar = new tough.CookieJar();
-const client = wrapper(axios.create({
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Referer': 'https://novlove.com/',
-    'Connection': 'keep-alive',
-  },
-  jar: cookieJar,
-  withCredentials: true,
-}));
+// Headers
+const defaultHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Referer': 'https://novlove.com/',
+  'Connection': 'keep-alive',
+};
 
 // Helper URLs
 const LIST_URL = 'https://novlove.com/sort/nov-love-popular?page=';
 const SEARCH_URL = 'https://novlove.com/search?keyword=';
 
 async function fetchHTML(url) {
-  const { data } = await client.get(url);
+  const { data } = await axios.get(url, { headers: defaultHeaders });
   return cheerio.load(data);
 }
 
@@ -60,7 +52,7 @@ async function getNovelList(page = 1, query) {
 
 async function fetchNovelDetails(novelUrl) {
   try {
-    const { data } = await client.get(novelUrl);
+    const { data } = await axios.get(novelUrl, { headers: defaultHeaders });
     const $ = cheerio.load(data);
 
     const title = $('h3.title').first().text().trim();
@@ -103,6 +95,7 @@ function getCache(key) {
   return cached.value;
 }
 
+
 app.get('/api/popular', async (req, res) => {
   const page = req.query.page || 1;
   try {
@@ -134,7 +127,7 @@ app.get('/api/search', async (req, res) => {
 
 async function getFullChapterList(novelId) {
   try {
-    const { data } = await client.get(`https://novlove.com/ajax/chapter-archive?novelId=${novelId}`);
+    const { data } = await axios.get(`https://novlove.com/ajax/chapter-archive?novelId=${novelId}`, { headers: defaultHeaders });
     const $ = cheerio.load(data);
     const chapters = [];
 
@@ -168,7 +161,7 @@ app.get('/api/novel/:slug', async (req, res) => {
 
 async function fetchChapterContent(chapterUrl) {
   try {
-    const { data } = await client.get(chapterUrl);
+    const { data } = await axios.get(chapterUrl, { headers: defaultHeaders });
     const $ = cheerio.load(data);
     $('.unlock-buttons').remove();
 
@@ -226,81 +219,215 @@ function stripHtmlTagsExceptP(html) {
   return paragraphs;
 }
 
-app.get('/api/img/:slug/:chapter/:page', async (req, res) => {
-  const { slug, chapter, page } = req.params;
-  const cacheKey = `${slug}_${chapter}_${page}`;
-  const cachedImage = getCache(cacheKey);
+app.get('/api/img/:slug/:chapterNum', async (req, res) => {
+  const { slug, chapterNum } = req.params;
+  const page = parseInt(req.query.page || '1', 10);
+  const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapterNum}`;
+  const cacheKey = `${slug}-${chapterNum}-p${page}-para`;
 
-  if (cachedImage) {
-    res.set('Content-Type', 'image/png');
-    return res.send(cachedImage);
+  const cached = getCache(cacheKey);
+  if (cached) {
+    res.set('Content-Type', 'image/jpeg');
+    res.set('X-Cache', 'HIT');
+    return res.send(cached);
   }
 
-  const chapterUrl = `https://novlove.com/novel/${slug}/chapter-${chapter}`;
-
   try {
-    const contentData = await fetchChapterContent(chapterUrl);
-    if (!contentData) return res.status(404).send('Chapter content not found');
+    const { data } = await axios.get(apiUrl);
+    const paragraphs = stripHtmlTagsExceptP(data.content);
 
-    const paragraphs = stripHtmlTagsExceptP(contentData.content);
-    const paraIndex = parseInt(page, 10) - 1;
-    if (paraIndex < 0 || paraIndex >= paragraphs.length) {
-      return res.status(404).send('Page not found');
-    }
+    const dpr = 2;
+    const width = 390;
+    const fontSize = 20;
+    const lineHeight = fontSize * 1.6;
+    const padding = 30;
+    const maxWidth = width - padding * 2;
+    const maxHeight = 1800;
 
-    const text = paragraphs[paraIndex];
+    const tempCanvas = createCanvas(width * dpr, 100);
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.scale(dpr, dpr);
+    tempCtx.font = `${fontSize}px Georgia`;
 
-    const width = 600;
-    const height = 800;
-    const canvas = createCanvas(width, height);
-    const ctx = canvas.getContext('2d');
+    const wrappedParagraphs = [];
 
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.fillStyle = '#333';
-    ctx.font = '20px Georgia';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-
-    // Text wrapping
-    const maxWidth = width - 40;
-    const lineHeight = 30;
-
-    function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
-      const words = text.split(' ');
+    for (const para of paragraphs) {
+      const words = para.split(' ');
+      let lines = [];
       let line = '';
-      let testLine = '';
-      let lineArray = [];
-      for (let n = 0; n < words.length; n++) {
-        testLine += words[n] + ' ';
-        const metrics = ctx.measureText(testLine);
-        if (metrics.width > maxWidth && n > 0) {
-          lineArray.push(line.trim());
-          line = words[n] + ' ';
-          testLine = words[n] + ' ';
+
+      for (const word of words) {
+        const testLine = line + (line ? ' ' : '') + word;
+        const { width: lineWidth } = tempCtx.measureText(testLine);
+        if (lineWidth > maxWidth && line) {
+          lines.push(line);
+          line = word;
         } else {
-          line += words[n] + ' ';
+          line = testLine;
         }
       }
-      lineArray.push(line.trim());
-      for (let i = 0; i < lineArray.length; i++) {
-        ctx.fillText(lineArray[i], x, y + i * lineHeight);
-      }
+      if (line) lines.push(line);
+      lines.push(''); // blank line after paragraph
+      wrappedParagraphs.push(lines);
     }
 
-    wrapText(ctx, text, 20, 20, maxWidth, lineHeight);
+    // Pagination of paragraphs into pages by height
+    const pages = [];
+    let currentPage = [];
+    let currentHeight = 0;
 
-    const buffer = canvas.toBuffer('image/png');
-    setCache(cacheKey, buffer);
+    for (const lines of wrappedParagraphs) {
+      const paraHeight = lines.length * lineHeight;
+      if (currentHeight + paraHeight > maxHeight && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentHeight = 0;
+      }
+      currentPage.push(...lines);
+      currentHeight += paraHeight;
+    }
+    if (currentPage.length > 0) {
+      pages.push(currentPage);
+    }
 
-    res.set('Content-Type', 'image/png');
-    res.send(buffer);
+    if (page < 1 || page > pages.length) {
+      return res.status(404).json({ error: `Page ${page} out of range` });
+    }
+
+    const pageLines = pages[page - 1];
+    const contentHeight = pageLines.length * lineHeight;
+
+    const canvas = createCanvas(width * dpr, contentHeight * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, contentHeight);
+    ctx.fillStyle = '#000000';
+    ctx.font = `${fontSize}px Georgia`;
+    ctx.textBaseline = 'top';
+
+    const extraTopPadding = 40; // Adjust top padding here for first page
+    let y = page === 1 ? extraTopPadding : 0;
+
+    for (const line of pageLines) {
+      ctx.fillText(line, padding, y);
+      y += lineHeight;
+    }
+
+    const jpegBuffer = canvas.toBuffer('image/jpeg', { quality: 0.85 });
+    setCache(cacheKey, jpegBuffer);
+
+    res.set('Content-Type', 'image/jpeg');
+    res.set('X-Cache', 'MISS');
+    res.set('X-Max-Pages', pages.length.toString());
+    res.set('X-Current-Page', page.toString());
+    res.send(jpegBuffer);
   } catch (err) {
-    res.status(500).send('Failed to generate image');
+    console.error('Image generation failed:', err.message);
+    res.status(500).send('Internal server error');
   }
 });
 
+
+app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
+  const { slug, chapter } = req.params;
+
+  try {
+    // Fetch chapter content
+    const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapter}`;
+    const { data } = await axios.get(apiUrl);
+    if (!data.content) {
+      return res.status(404).json({ error: 'Chapter content not found' });
+    }
+
+    // Strip HTML to paragraphs (plain text)
+    const paragraphs = stripHtmlTagsExceptP(data.content);
+
+    // Setup canvas for text measurement (same as image endpoint)
+    const dpr = 2;
+    const width = 390;
+    const fontSize = 20;
+    const lineHeight = fontSize * 1.6;
+    const padding = 30;
+    const maxWidth = width - padding * 2;
+    const maxHeight = 1800;
+
+    const tempCanvas = createCanvas(width * dpr, 100);
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.scale(dpr, dpr);
+    tempCtx.font = `${fontSize}px Georgia`;
+
+    const wrappedParagraphs = [];
+
+    // Wrap each paragraph
+    for (const para of paragraphs) {
+      const words = para.split(' ');
+      let lines = [];
+      let line = '';
+
+      for (const word of words) {
+        const testLine = line + (line ? ' ' : '') + word;
+        const { width: lineWidth } = tempCtx.measureText(testLine);
+        if (lineWidth > maxWidth && line) {
+          lines.push(line);
+          line = word;
+        } else {
+          line = testLine;
+        }
+      }
+      if (line) lines.push(line);
+      lines.push(''); // Add blank line after paragraph
+      wrappedParagraphs.push(lines);
+    }
+
+    // Group paragraphs into pages by total height
+    const pages = [];
+    let currentPage = [];
+    let currentHeight = 0;
+
+    for (const lines of wrappedParagraphs) {
+      const paraHeight = lines.length * lineHeight;
+      if (currentHeight + paraHeight > maxHeight && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentHeight = 0;
+      }
+      currentPage.push(...lines);
+      currentHeight += paraHeight;
+    }
+    if (currentPage.length > 0) {
+      pages.push(currentPage);
+    }
+
+    // Build page URLs
+    const baseUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
+    const pageUrls = pages.map((_, i) => `${baseUrl}?page=${i + 1}`);
+    res.json({ totalPages: pages.length, pages: pageUrls });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to generate page list' });
+  }
+});
+
+
+
+app.get('/', (req, res) => {
+  res.send('📖 Novel API is running.');
+});
+
+app.get('/api', (req, res) => {
+  res.json({
+    message: 'Welcome to the Novel API',
+    endpoints: {
+      popular: '/api/popular?page=1',
+      search: '/api/search?q=keyword&page=1',
+      novelDetails: '/api/novel/:slug',
+      chapterContent: '/api/novel/:slug/:chapter',
+      img: '/api/img/:slug/:chapterNum',
+    },
+  });
+});
+
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`✅ Server listening on port ${PORT}`);
 });
