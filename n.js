@@ -223,7 +223,7 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
   const { slug, chapterNum } = req.params;
   const page = parseInt(req.query.page || '1', 10);
   const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapterNum}`;
-  const cacheKey = `${slug}-${chapterNum}-page${page}`;
+  const cacheKey = `${slug}-${chapterNum}-p${page}-para`;
 
   const cached = getCache(cacheKey);
   if (cached) {
@@ -238,48 +238,77 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
 
     const dpr = 2;
     const width = 390;
-    const padding = 30;
     const fontSize = 20;
     const lineHeight = fontSize * 1.6;
+    const padding = 30;
     const maxWidth = width - padding * 2;
-    const linesPerPage = 100;
+    const maxHeight = 1800;
 
-    const height = 1800;
-    const canvas = createCanvas(width * dpr, height * dpr);
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = '#000000';
-    ctx.font = `${fontSize}px Georgia`;
-    ctx.textBaseline = 'top';
+    const tempCanvas = createCanvas(width * dpr, 100);
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.scale(dpr, dpr);
+    tempCtx.font = `${fontSize}px Georgia`;
 
-    let allLines = [];
+    const wrappedParagraphs = [];
+
+    // Wrap each paragraph
     for (const para of paragraphs) {
       const words = para.split(' ');
+      let lines = [];
       let line = '';
-      for (let word of words) {
+
+      for (const word of words) {
         const testLine = line + (line ? ' ' : '') + word;
-        const metrics = ctx.measureText(testLine);
-        if (metrics.width > maxWidth && line) {
-          allLines.push(line);
+        const { width: lineWidth } = tempCtx.measureText(testLine);
+        if (lineWidth > maxWidth && line) {
+          lines.push(line);
           line = word;
         } else {
           line = testLine;
         }
       }
-      if (line) allLines.push(line);
-      allLines.push('');
+      if (line) lines.push(line);
+      lines.push(''); // Add blank line after paragraph
+      wrappedParagraphs.push(lines);
     }
 
-    const maxPages = Math.ceil(allLines.length / linesPerPage);
-    if (page > maxPages) {
-      return res.status(404).json({ error: 'Page out of range' });
+    // Group paragraphs into pages by total height
+    const pages = [];
+    let currentPage = [];
+    let currentHeight = 0;
+
+    for (const lines of wrappedParagraphs) {
+      const paraHeight = lines.length * lineHeight;
+      if (currentHeight + paraHeight > maxHeight && currentPage.length > 0) {
+        pages.push(currentPage);
+        currentPage = [];
+        currentHeight = 0;
+      }
+      currentPage.push(...lines);
+      currentHeight += paraHeight;
+    }
+    if (currentPage.length > 0) {
+      pages.push(currentPage);
     }
 
-    const pageLines = allLines.slice((page - 1) * linesPerPage, page * linesPerPage);
-    let y = padding;
-    for (let line of pageLines) {
+    if (page < 1 || page > pages.length) {
+      return res.status(404).json({ error: `Page ${page} out of range` });
+    }
+
+    const pageLines = pages[page - 1];
+    const contentHeight = pageLines.length * lineHeight;
+
+    const canvas = createCanvas(width * dpr, contentHeight * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, contentHeight);
+    ctx.fillStyle = '#000000';
+    ctx.font = `${fontSize}px Georgia`;
+    ctx.textBaseline = 'top';
+
+    let y = 0;
+    for (const line of pageLines) {
       ctx.fillText(line, padding, y);
       y += lineHeight;
     }
@@ -288,12 +317,84 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
     setCache(cacheKey, jpegBuffer);
 
     res.set('Content-Type', 'image/jpeg');
-    res.set('X-Max-Pages', maxPages);
     res.set('X-Cache', 'MISS');
+    res.set('X-Max-Pages', pages.length.toString());
+    res.set('X-Current-Page', page.toString());
     res.send(jpegBuffer);
   } catch (err) {
     console.error('Image generation failed:', err.message);
     res.status(500).send('Internal server error');
+  }
+});
+
+app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
+  const { slug, chapter } = req.params;
+
+  try {
+    // Fetch chapter content to count paragraphs and lines
+    const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapter}`;
+    const { data } = await axios.get(apiUrl);
+    if (!data.content) {
+      return res.status(404).json({ error: 'Chapter content not found' });
+    }
+
+    // Extract paragraphs as plain text
+    const paragraphs = stripHtmlTagsExceptP(data.content);
+
+    // Setup canvas for text measurement
+    const dpr = 2;
+    const width = 390;
+    const padding = 30;
+    const fontSize = 20;
+    const lineHeight = fontSize * 1.6;
+    const maxWidth = width - padding * 2;
+    const linesPerPage = 100;
+
+    const canvas = createCanvas(width * dpr, 1000 * dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.font = `${fontSize}px Georgia`;
+
+    function wrapParagraph(para) {
+      const words = para.split(' ');
+      const lines = [];
+      let line = '';
+      for (const word of words) {
+        const testLine = line ? line + ' ' + word : word;
+        const metrics = ctx.measureText(testLine);
+        if (metrics.width > maxWidth && line) {
+          lines.push(line);
+          line = word;
+        } else {
+          line = testLine;
+        }
+      }
+      if (line) lines.push(line);
+      return lines;
+    }
+
+    // Wrap all paragraphs into lines
+    const wrappedParagraphs = paragraphs.map(p => wrapParagraph(p));
+
+    // Calculate total lines, splitting only at paragraph boundaries
+    let totalLines = 0;
+    for (const paraLines of wrappedParagraphs) {
+      totalLines += paraLines.length + 1; // +1 for blank line after paragraph
+    }
+
+    const totalPages = Math.ceil(totalLines / linesPerPage);
+
+    // Construct all page URLs
+    const baseUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
+    const pageUrls = [];
+    for (let i = 1; i <= totalPages; i++) {
+      pageUrls.push(`${baseUrl}?page=${i}`);
+    }
+
+    res.json({ totalPages, pages: pageUrls });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to generate page list' });
   }
 });
 
