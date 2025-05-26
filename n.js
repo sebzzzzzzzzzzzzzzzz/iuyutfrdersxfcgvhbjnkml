@@ -385,7 +385,7 @@ app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
     const totalPages = Math.ceil(totalLines / linesPerPage);
 
     // Construct all page URLs
-    const baseUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
+    const baseUrl = `htps://${req.get('host')}/api/img/${slug}/${chapter}`;
     const pageUrls = [];
     for (let i = 1; i <= totalPages; i++) {
       pageUrls.push(`${baseUrl}?page=${i}`);
