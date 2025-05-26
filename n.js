@@ -251,7 +251,6 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
 
     const wrappedParagraphs = [];
 
-    // Wrap each paragraph
     for (const para of paragraphs) {
       const words = para.split(' ');
       let lines = [];
@@ -268,11 +267,11 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
         }
       }
       if (line) lines.push(line);
-      lines.push(''); // Add blank line after paragraph
+      lines.push(''); // blank line after paragraph
       wrappedParagraphs.push(lines);
     }
 
-    // Group paragraphs into pages by total height
+    // Pagination of paragraphs into pages by height
     const pages = [];
     let currentPage = [];
     let currentHeight = 0;
@@ -307,7 +306,9 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
     ctx.font = `${fontSize}px Georgia`;
     ctx.textBaseline = 'top';
 
-    let y = 0;
+    const extraTopPadding = 40; // Adjust top padding here for first page
+    let y = page === 1 ? extraTopPadding : 0;
+
     for (const line of pageLines) {
       ctx.fillText(line, padding, y);
       y += lineHeight;
@@ -326,6 +327,7 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
     res.status(500).send('Internal server error');
   }
 });
+
 
 app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
   const { slug, chapter } = req.params;
