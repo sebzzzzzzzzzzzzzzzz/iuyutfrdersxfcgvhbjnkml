@@ -1,345 +1,95 @@
-const express = require('express');
-const axios = require('axios');
+const axios = require('axios').default;
 const cheerio = require('cheerio');
-const cors = require('cors');
-const { createCanvas, registerFont } = require('canvas');
-const path = require('path');
+const tough = require('tough-cookie');
+const { wrapper } = require('axios-cookiejar-support');
 
-const app = express();
-const PORT = process.env.PORT || 3005;
-
-// Register font for canvas text rendering
-registerFont(path.join(__dirname, 'georgia.ttf'), { family: 'Georgia' });
-
-// Enable CORS for all origins
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+const cookieJar = new tough.CookieJar();
+const client = wrapper(axios.create({
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+                  '(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://novlove.com/',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Connection': 'keep-alive',
+    'DNT': '1',
+    'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-User': '?1',
+    'sec-ch-ua': '"Chromium";v="115", "Not)A;Brand";v="8"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+  },
+  jar: cookieJar,
+  withCredentials: true,
 }));
 
-// Headers to mimic a real browser request
-const defaultHeaders = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-                'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-                'Chrome/115.0.0.0 Safari/537.36',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-  'Referer': 'https://novlove.com/',
-  'Connection': 'keep-alive',
-  'DNT': '1',  // Do Not Track
-  'Upgrade-Insecure-Requests': '1',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'same-origin',
-  'Sec-Fetch-User': '?1',
-};
-
-// Helper URLs
-const LIST_URL = 'https://novlove.com/sort/nov-love-popular?page=';
-const SEARCH_URL = 'https://novlove.com/search?keyword=';
+function delay(ms) {
+  return new Promise(res => setTimeout(res, ms));
+}
 
 async function fetchHTML(url) {
-  // Perform axios get with headers and small random delay to simulate human browsing
-  await delayRandom(200, 400);
-  const { data } = await axios.get(url, { headers: defaultHeaders });
-  return cheerio.load(data);
+  try {
+    // Delay to avoid hammering server
+    await delay(300 + Math.random() * 200);
+    const response = await client.get(url);
+    return cheerio.load(response.data);
+  } catch (err) {
+    console.error(`Failed to fetch ${url}: ${err.message}`);
+    throw err;
+  }
 }
 
-// Utility delay function to slow down requests a bit
-function delayRandom(min, max) {
-  return new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * (max - min + 1)) + min));
-}
+async function getNovelDetails(novelUrl) {
+  const $ = await fetchHTML(novelUrl);
 
-async function getNovelList(page = 1, query) {
-  const fullUrl = query ? `${SEARCH_URL}${encodeURIComponent(query)}&page=${page}` : `${LIST_URL}${page}`;
-  const $ = await fetchHTML(fullUrl);
-  const novels = [];
+  // Example selectors, adjust if site layout changes:
+  const title = $('h1.entry-title').text().trim();
+  const cover = $('div.post-thumbnail img').attr('src') || null;
+  const author = $('span[itemprop="author"]').text().trim();
+  const summary = $('div.entry-content > p').first().text().trim();
 
-  $('h3.novel-title a').each((i, el) => {
-    const title = $(el).text().trim();
-    const url = $(el).attr('href');
-    if (title && url) novels.push({ title, url });
+  // Extract chapters list
+  const chapters = [];
+  $('ul.chapters-list li a').each((_, el) => {
+    const chapterTitle = $(el).text().trim();
+    const chapterUrl = $(el).attr('href');
+    chapters.push({ title: chapterTitle, url: chapterUrl });
   });
 
-  return novels;
+  return { title, cover, author, summary, chapters };
 }
 
-async function fetchNovelDetails(novelUrl) {
+async function getChapterContent(chapterUrl) {
+  const $ = await fetchHTML(chapterUrl);
+
+  // The chapter content container selector (adjust if necessary)
+  const content = $('div.chapter-content').html();
+
+  return content;
+}
+
+(async () => {
   try {
-    const { data } = await axios.get(novelUrl, { headers: defaultHeaders });
-    const $ = cheerio.load(data);
+    const novelUrl = 'https://novlove.com/novel/example-novel'; // Replace with actual novel URL
 
-    const title = $('h3.title').first().text().trim();
-    const rating = $('#rateVal').attr('value') || null;
-    const cover = $('img.lazy').first().attr('data-src') || $('img.lazy').first().attr('src') || null;
-    const author = $('.info-meta li:has(h3:contains("Author")) a').text().trim();
-    const genres = $('.info-meta li:has(h3:contains("Genre")) a').map((i, el) => $(el).text().trim()).get();
-    const status = $('.info-meta li:has(h3:contains("Status")) a').text().trim();
-    const tags = $('.tag-container a').map((i, el) => $(el).text().trim()).get();
+    console.log('Fetching novel details...');
+    const novelDetails = await getNovelDetails(novelUrl);
+    console.log('Novel:', novelDetails.title);
+    console.log('Author:', novelDetails.author);
+    console.log('Summary:', novelDetails.summary);
+    console.log(`Found ${novelDetails.chapters.length} chapters.`);
 
-    let description = $('.desc-text[itemprop="description"]').text().replace(/\s*\n\s*/g, '\n').replace(/\n{2,}/g, '\n\n').trim();
-    if (!description) {
-      description = $('#tab-description-title').text().replace(/\s*\n\s*/g, '\n').replace(/\n{2,}/g, '\n\n').trim();
+    if (novelDetails.chapters.length > 0) {
+      console.log('Fetching first chapter content...');
+      const firstChapter = novelDetails.chapters[0];
+      const chapterContent = await getChapterContent(firstChapter.url);
+      console.log(`Chapter: ${firstChapter.title}`);
+      console.log(chapterContent.substring(0, 500)); // print first 500 chars of content
     }
-
-    return { title, rating, author, cover, genres, status, tags, description, url: novelUrl };
-  } catch (err) {
-    console.error('Fetch novel details error:', err.message);
-    return null;
+  } catch (error) {
+    console.error('Error:', error);
   }
-}
-
-const imageCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
-
-function setCache(key, value) {
-  imageCache.set(key, {
-    value,
-    expiry: Date.now() + CACHE_TTL,
-  });
-}
-
-function getCache(key) {
-  const cached = imageCache.get(key);
-  if (!cached) return null;
-  if (Date.now() > cached.expiry) {
-    imageCache.delete(key);
-    return null;
-  }
-  return cached.value;
-}
-
-app.get('/api/popular', async (req, res) => {
-  const page = req.query.page || 1;
-  try {
-    const novels = await getNovelList(page);
-    const novelsWithDetails = await Promise.all(novels.map(async (novel) => {
-      const details = await fetchNovelDetails(novel.url);
-      return { ...novel, ...details };
-    }));
-    res.json({ page: Number(page), novels: novelsWithDetails });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch popular novels' });
-  }
-});
-
-app.get('/api/search', async (req, res) => {
-  const word = req.query.q;
-  const page = req.query.page || 1;
-  try {
-    const novels = await getNovelList(page, word);
-    const novelsWithDetails = await Promise.all(novels.map(async (novel) => {
-      const details = await fetchNovelDetails(novel.url);
-      return { ...novel, ...details };
-    }));
-    res.json({ page: Number(page), novels: novelsWithDetails });
-  } catch (err) {
-    res.status(500).json({ error: `Failed to search novels for "${word}"` });
-  }
-});
-
-async function getFullChapterList(novelId) {
-  try {
-    const { data } = await axios.get(`https://novlove.com/ajax/chapter-archive?novelId=${novelId}`, { headers: defaultHeaders });
-    const $ = cheerio.load(data);
-    const chapters = [];
-
-    $('ul.list-chapter li a').each((i, el) => {
-      const fullText = $(el).text().trim();
-      const match = fullText.match(/^Chapter\s+(\d+)/i);
-      const chapter = match ? match[1] : null;
-      const url = $(el).attr('href') || '';
-      chapters.push({ chapter, url });
-    });
-
-    return chapters;
-  } catch (err) {
-    console.error('Error fetching chapters:', err.message);
-    return [];
-  }
-}
-
-app.get('/api/novel/:slug', async (req, res) => {
-  const slug = req.params.slug;
-  const novelUrl = `https://novlove.com/novel/${slug}`;
-  try {
-    const details = await fetchNovelDetails(novelUrl);
-    const chapters = await getFullChapterList(slug);
-    if (!details) return res.status(404).json({ error: 'Novel not found' });
-    res.json({ ...details, chapters });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch novel' });
-  }
-});
-
-async function fetchChapterContent(chapterUrl) {
-  try {
-    const { data } = await axios.get(chapterUrl, { headers: defaultHeaders });
-    const $ = cheerio.load(data);
-    $('.unlock-buttons').remove();
-
-    const title = $('.novel-title').text().trim();
-    const paragraphs = [];
-
-    $('p').each((i, el) => {
-      const text = $(el).text().trim();
-      if (
-        text.startsWith('Source:') ||
-        text.includes('Total Responses') ||
-        text === '' ||
-        text === '\u00A0'
-      ) return;
-      paragraphs.push(`<p>${text}</p>`);
-    });
-
-    return { title, content: paragraphs.join('') };
-  } catch (err) {
-    console.error(`Failed to fetch chapter content from ${chapterUrl}:`, err.message);
-    return null;
-  }
-}
-
-app.get('/api/novel/:slug/:chapter', async (req, res) => {
-  const { slug, chapter } = req.params;
-  const chapterUrl = `https://novlove.com/novel/${slug}/chapter-${chapter}`;
-  const protocol = req.protocol;
-  const host = req.get('host');
-  try {
-    const content = await fetchChapterContent(chapterUrl);
-    if (!content) return res.status(404).json({ error: 'Chapter content not found' });
-
-    res.json({
-      title: content.title,
-      slug: slug,
-      img: `${protocol}://${host}/api/img/${slug}/${chapter}?page=1`,
-      chapter: chapter,
-      url: chapterUrl,
-      content: content.content,
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch chapter' });
-  }
-});
-
-function stripHtmlTagsExceptP(html) {
-  const regex = /<p>(.*?)<\/p>/gis;
-  const paragraphs = [];
-  let match;
-  while ((match = regex.exec(html)) !== null) {
-    const cleanText = match[1].replace(/<\/?[^>]+(>|$)/g, '').replace(/\s+/g, ' ').trim();
-    if (cleanText.length > 0) paragraphs.push(cleanText);
-  }
-  return paragraphs;
-}
-
-app.get('/api/img/:slug/:chapterNum', async (req, res) => {
-  const { slug, chapterNum } = req.params;
-  const page = parseInt(req.query.page || '1', 10);
-  const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapterNum}`;
-  const cacheKey = `${slug}-${chapterNum}-p${page}-para`;
-
-  const cached = getCache(cacheKey);
-  if (cached) {
-    res.set('Content-Type', 'image/jpeg');
-    res.set('X-Cache', 'HIT');
-    return res.send(cached);
-  }
-
-  try {
-    const { data } = await axios.get(apiUrl);
-    const paragraphs = stripHtmlTagsExceptP(data.content);
-
-    const dpr = 2;
-    const width = 390;
-    const fontSize = 20;
-    const lineHeight = fontSize * 1.6;
-    const padding = 30;
-    const maxWidth = width - padding * 2;
-    const maxHeight = 1800;
-
-    const tempCanvas = createCanvas(width * dpr, 100);
-    const tempCtx = tempCanvas.getContext('2d');
-    tempCtx.scale(dpr, dpr);
-    tempCtx.font = `${fontSize}px Georgia`;
-
-    const wrappedParagraphs = [];
-
-    for (const para of paragraphs) {
-      const words = para.split(' ');
-      let lines = [];
-      let line = '';
-
-      for (const word of words) {
-        const testLine = line + (line ? ' ' : '') + word;
-        const { width: lineWidth } = tempCtx.measureText(testLine);
-        if (lineWidth > maxWidth && line) {
-          lines.push(line);
-          line = word;
-        } else {
-          line = testLine;
-        }
-      }
-      if (line) lines.push(line);
-      lines.push(''); // blank line after paragraph
-      wrappedParagraphs.push(lines);
-    }
-
-    // Pagination of paragraphs into pages by height
-    const pages = [];
-    let currentPage = [];
-    let currentHeight = 0;
-
-    for (const lines of wrappedParagraphs) {
-      const paraHeight = lines.length * lineHeight;
-      if (currentHeight + paraHeight > maxHeight && currentPage.length > 0) {
-        pages.push(currentPage);
-        currentPage = [];
-        currentHeight = 0;
-      }
-      currentPage.push(...lines);
-      currentHeight += paraHeight;
-    }
-    if (currentPage.length > 0) {
-      pages.push(currentPage);
-    }
-
-    if (page < 1 || page > pages.length) {
-      return res.status(404).json({ error: `Page ${page} out of range` });
-    }
-
-    const pageLines = pages[page - 1];
-    const contentHeight = pageLines.length * lineHeight + padding * 2;
-
-    const canvas = createCanvas(width * dpr, contentHeight * dpr);
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-
-    ctx.fillStyle = '#f6f6f6';
-    ctx.fillRect(0, 0, width, contentHeight);
-
-    ctx.fillStyle = '#000';
-    ctx.font = `${fontSize}px Georgia`;
-    ctx.textBaseline = 'top';
-
-    let y = padding;
-    for (const line of pageLines) {
-      ctx.fillText(line, padding, y);
-      y += lineHeight;
-    }
-
-    const buffer = canvas.toBuffer('image/jpeg', { quality: 0.85 });
-    setCache(cacheKey, buffer);
-
-    res.set('Content-Type', 'image/jpeg');
-    res.set('X-Cache', 'MISS');
-    res.send(buffer);
-  } catch (err) {
-    console.error('Error generating image:', err.message);
-    res.status(500).json({ error: 'Failed to generate image' });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`NovLove API server running on port ${PORT}`);
-});
+})();
