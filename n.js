@@ -8,23 +8,31 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3005;
 
-// Register font
+// Register font for canvas text rendering
 registerFont(path.join(__dirname, 'georgia.ttf'), { family: 'Georgia' });
 
-// CORS
+// Enable CORS for all origins
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 
-// Headers
+// Headers to mimic a real browser request
 const defaultHeaders = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+                'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+                'Chrome/115.0.0.0 Safari/537.36',
   'Accept-Language': 'en-US,en;q=0.9',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
   'Referer': 'https://novlove.com/',
   'Connection': 'keep-alive',
+  'DNT': '1',  // Do Not Track
+  'Upgrade-Insecure-Requests': '1',
+  'Sec-Fetch-Dest': 'document',
+  'Sec-Fetch-Mode': 'navigate',
+  'Sec-Fetch-Site': 'same-origin',
+  'Sec-Fetch-User': '?1',
 };
 
 // Helper URLs
@@ -32,8 +40,15 @@ const LIST_URL = 'https://novlove.com/sort/nov-love-popular?page=';
 const SEARCH_URL = 'https://novlove.com/search?keyword=';
 
 async function fetchHTML(url) {
+  // Perform axios get with headers and small random delay to simulate human browsing
+  await delayRandom(200, 400);
   const { data } = await axios.get(url, { headers: defaultHeaders });
   return cheerio.load(data);
+}
+
+// Utility delay function to slow down requests a bit
+function delayRandom(min, max) {
+  return new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * (max - min + 1)) + min));
 }
 
 async function getNovelList(page = 1, query) {
@@ -76,7 +91,7 @@ async function fetchNovelDetails(novelUrl) {
 }
 
 const imageCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache TTL
 
 function setCache(key, value) {
   imageCache.set(key, {
@@ -94,7 +109,6 @@ function getCache(key) {
   }
   return cached.value;
 }
-
 
 app.get('/api/popular', async (req, res) => {
   const page = req.query.page || 1;
@@ -198,7 +212,7 @@ app.get('/api/novel/:slug/:chapter', async (req, res) => {
     res.json({
       title: content.title,
       slug: slug,
-      img: `${protocol}://${host}/api/novel/${slug}/${chapter}/pages`,
+      img: `${protocol}://${host}/api/img/${slug}/${chapter}?page=1`,
       chapter: chapter,
       url: chapterUrl,
       content: content.content,
@@ -295,139 +309,37 @@ app.get('/api/img/:slug/:chapterNum', async (req, res) => {
     }
 
     const pageLines = pages[page - 1];
-    const contentHeight = pageLines.length * lineHeight;
+    const contentHeight = pageLines.length * lineHeight + padding * 2;
 
     const canvas = createCanvas(width * dpr, contentHeight * dpr);
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
-    ctx.fillStyle = '#ffffff';
+
+    ctx.fillStyle = '#f6f6f6';
     ctx.fillRect(0, 0, width, contentHeight);
-    ctx.fillStyle = '#000000';
+
+    ctx.fillStyle = '#000';
     ctx.font = `${fontSize}px Georgia`;
     ctx.textBaseline = 'top';
 
-    const extraTopPadding = 40; // Adjust top padding here for first page
-    let y = page === 1 ? extraTopPadding : 0;
-
+    let y = padding;
     for (const line of pageLines) {
       ctx.fillText(line, padding, y);
       y += lineHeight;
     }
 
-    const jpegBuffer = canvas.toBuffer('image/jpeg', { quality: 0.85 });
-    setCache(cacheKey, jpegBuffer);
+    const buffer = canvas.toBuffer('image/jpeg', { quality: 0.85 });
+    setCache(cacheKey, buffer);
 
     res.set('Content-Type', 'image/jpeg');
     res.set('X-Cache', 'MISS');
-    res.set('X-Max-Pages', pages.length.toString());
-    res.set('X-Current-Page', page.toString());
-    res.send(jpegBuffer);
+    res.send(buffer);
   } catch (err) {
-    console.error('Image generation failed:', err.message);
-    res.status(500).send('Internal server error');
+    console.error('Error generating image:', err.message);
+    res.status(500).json({ error: 'Failed to generate image' });
   }
-});
-
-
-app.get('/api/novel/:slug/:chapter/pages', async (req, res) => {
-  const { slug, chapter } = req.params;
-
-  try {
-    // Fetch chapter content
-    const apiUrl = `${req.protocol}://${req.get('host')}/api/novel/${slug}/${chapter}`;
-    const { data } = await axios.get(apiUrl);
-    if (!data.content) {
-      return res.status(404).json({ error: 'Chapter content not found' });
-    }
-
-    // Strip HTML to paragraphs (plain text)
-    const paragraphs = stripHtmlTagsExceptP(data.content);
-
-    // Setup canvas for text measurement (same as image endpoint)
-    const dpr = 2;
-    const width = 390;
-    const fontSize = 20;
-    const lineHeight = fontSize * 1.6;
-    const padding = 30;
-    const maxWidth = width - padding * 2;
-    const maxHeight = 1800;
-
-    const tempCanvas = createCanvas(width * dpr, 100);
-    const tempCtx = tempCanvas.getContext('2d');
-    tempCtx.scale(dpr, dpr);
-    tempCtx.font = `${fontSize}px Georgia`;
-
-    const wrappedParagraphs = [];
-
-    // Wrap each paragraph
-    for (const para of paragraphs) {
-      const words = para.split(' ');
-      let lines = [];
-      let line = '';
-
-      for (const word of words) {
-        const testLine = line + (line ? ' ' : '') + word;
-        const { width: lineWidth } = tempCtx.measureText(testLine);
-        if (lineWidth > maxWidth && line) {
-          lines.push(line);
-          line = word;
-        } else {
-          line = testLine;
-        }
-      }
-      if (line) lines.push(line);
-      lines.push(''); // Add blank line after paragraph
-      wrappedParagraphs.push(lines);
-    }
-
-    // Group paragraphs into pages by total height
-    const pages = [];
-    let currentPage = [];
-    let currentHeight = 0;
-
-    for (const lines of wrappedParagraphs) {
-      const paraHeight = lines.length * lineHeight;
-      if (currentHeight + paraHeight > maxHeight && currentPage.length > 0) {
-        pages.push(currentPage);
-        currentPage = [];
-        currentHeight = 0;
-      }
-      currentPage.push(...lines);
-      currentHeight += paraHeight;
-    }
-    if (currentPage.length > 0) {
-      pages.push(currentPage);
-    }
-
-    // Build page URLs
-    const baseUrl = `${req.protocol}://${req.get('host')}/api/img/${slug}/${chapter}`;
-    const pageUrls = pages.map((_, i) => `${baseUrl}?page=${i + 1}`);
-    res.json({ totalPages: pages.length, pages: pageUrls });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to generate page list' });
-  }
-});
-
-
-
-app.get('/', (req, res) => {
-  res.send('📖 Novel API is running.');
-});
-
-app.get('/api', (req, res) => {
-  res.json({
-    message: 'Welcome to the Novel API',
-    endpoints: {
-      popular: '/api/popular?page=1',
-      search: '/api/search?q=keyword&page=1',
-      novelDetails: '/api/novel/:slug',
-      chapterContent: '/api/novel/:slug/:chapter',
-      img: '/api/img/:slug/:chapterNum',
-    },
-  });
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Server listening on port ${PORT}`);
+  console.log(`NovLove API server running on port ${PORT}`);
 });
