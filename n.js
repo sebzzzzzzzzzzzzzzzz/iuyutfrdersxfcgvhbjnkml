@@ -417,15 +417,14 @@ app.get('/', (req, res) => {
 
 app.get('/api', (req, res) => {
   res.json({
-    message: '📘 Welcome to the NovLove Novel API!',
+    message: 'Welcome to the Novel API',
     endpoints: {
       popular: '/api/popular?page=1',
-      search: '/api/search?q=your+query&page=1',
+      search: '/api/search?q=keyword&page=1',
       novelDetails: '/api/novel/:slug',
       chapterContent: '/api/novel/:slug/:chapter',
-      chapterImage: '/api/img/:slug/:chapterNum?page=1',
-      chapterPages: '/api/novel/:slug/:chapter/pages'
-    }
+      img: '/api/img/:slug/:chapterNum',
+    },
   });
 });
 
